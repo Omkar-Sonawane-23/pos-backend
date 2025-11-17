@@ -12,6 +12,15 @@ exports.createOrder = async (req, res, next) => {
   }
 };
 
+exports.listOrders = async (req, res, next) => {
+  try {
+    const orders = await orderService.listOrders();
+    res.json({ data: orders });
+  } catch (err) {
+    next(err);
+  }
+};
+
 exports.getById = async (req, res, next) => {
   try {
     const order = await orderService.getById(req.params.id);

@@ -33,12 +33,12 @@ exports.register = async ({ email, name, password, roleName, restaurantId }) => 
 
 exports.login = async (email, password) => {
   if (!email || !password) throw Object.assign(new Error('Missing credentials'), { status: 400 });
-  const user = await User.findOne({ email }).populate('roles');
-  if (!user) throw Object.assign(new Error('Invalid credentials'), { status: 400 });
+  const user = await User.findOne({ email }).populate('roles outlet restaurant');
+  if (!user) throw Object.assign(new Error('User not found '), { status: 400 });
 
   const ok = await bcrypt.compare(password, user.passwordHash || '');
   if (!ok) throw Object.assign(new Error('Invalid credentials'), { status: 400 });
-
+ 
   const token = signToken(user);
-  return { user: { id: user._id, email: user.email, name: user.name, roles: user.roles }, token };
+  return { user: { id: user._id, email: user.email, name: user.name, outlet: user.outlet, restaurant: user.restaurant, roles: user.roles }, token };
 };

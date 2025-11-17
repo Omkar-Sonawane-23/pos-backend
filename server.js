@@ -9,6 +9,7 @@ const db = require('./db'); // connects to Mongo
 const seedRoles = require('./seed/seedRoles');
 
 const authRoutes = require('./routes/auth');
+const tableRoutes = require('./routes/table');
 const menuRoutes = require('./routes/menu');
 const orderRoutes = require('./routes/orders');
 
@@ -21,6 +22,7 @@ app.use(morgan('dev'));
 
 // mount routes
 app.use('/api/auth', authRoutes);
+app.use('/api/tables', tableRoutes);
 app.use('/api/menu', menuRoutes);
 app.use('/api/orders', orderRoutes);
 
