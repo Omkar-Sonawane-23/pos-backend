@@ -1,6 +1,6 @@
+// models/Order.js
 const mongoose = require('mongoose');
 const { Schema, model, Types } = mongoose;
-
 
 const OrderItemSchema = new Schema({
     menuItem: { type: Types.ObjectId, ref: 'MenuItem', required: true },
@@ -13,7 +13,6 @@ const OrderItemSchema = new Schema({
     taxes: { type: Number, default: 0 },
     note: { type: String }
 }, { _id: false });
-
 
 const OrderSchema = new Schema({
     restaurant: { type: Types.ObjectId, ref: 'Restaurant', required: true },
@@ -32,11 +31,15 @@ const OrderSchema = new Schema({
     placedAt: { type: Date, default: Date.now },
     placedBy: { type: Types.ObjectId, ref: 'User' },
     notes: { type: String },
-    meta: { type: Schema.Types.Mixed }
-}, { timestamps: true });
+    meta: { type: Schema.Types.Mixed } // used for idempotency e.g. meta.idempotencyKey
+}, { timestamps: true, autoIndex: false });
 
+// Indexes (create via migration script in prod)
+OrderSchema.index({ restaurant: 1, outlet: 1, orderNumber: 1 }, { unique: true, background: true });
+OrderSchema.index({ restaurant: 1, placedAt: -1 }, { background: true });
+OrderSchema.index({ restaurant: 1, status: 1, placedAt: -1 }, { background: true });
 
-OrderSchema.index({ restaurant: 1, outlet: 1, orderNumber: 1 }, { unique: true });
-
+// If you want fast lookup for idempotency by meta.idempotencyKey
+OrderSchema.index({ 'meta.idempotencyKey': 1, restaurant: 1 }, { unique: false, background: true });
 
 module.exports = model('Order', OrderSchema);

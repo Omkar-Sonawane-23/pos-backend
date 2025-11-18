@@ -1,5 +1,5 @@
+// controllers/tableController.js
 const tableService = require('../services/tableService');
-
 
 exports.listTables = async (req, res, next) => {
     try {

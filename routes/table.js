@@ -14,7 +14,7 @@ router.post('/:id/occupy', auth, roleCheck(['Cashier','Admin','SuperAdmin']), ta
 
 
 // free a table (Admin or SuperAdmin or same cashier)
-router.post('/:id/free', auth, roleCheck(['Admin','SuperAdmin']), tableController.freeTable);
+router.post('/:id/free', auth, roleCheck(['Cashier', 'Admin','SuperAdmin']), tableController.freeTable);
 
 
 // merge two tables (Admin or SuperAdmin)

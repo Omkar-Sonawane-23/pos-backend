@@ -8,6 +8,6 @@ const roleCheck = require('../middleware/roleCheck');
 // require auth for creating orders
 router.post('/', auth, roleCheck(['Cashier', 'Admin', 'SuperAdmin']), orderController.createOrder);
 router.get('/', auth, roleCheck(['Cashier', 'Admin', 'SuperAdmin']), orderController.listOrders);
-router.get('/:id', auth, roleCheck(['Admin', 'SuperAdmin']), orderController.getById);
+router.get('/:id', auth, roleCheck(['Cashier', 'Admin', 'SuperAdmin']), orderController.getById);
 
 module.exports = router;

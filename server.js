@@ -6,7 +6,7 @@ const helmet = require('helmet');
 const cors = require('cors');
 
 const db = require('./db'); // connects to Mongo
-const seedRoles = require('./seed/seedRoles');
+// const seedRoles = require('./seed/seedRoles');
 
 const authRoutes = require('./routes/auth');
 const tableRoutes = require('./routes/table');
@@ -36,7 +36,7 @@ const PORT = process.env.PORT || 3000;
   try {
     await db.connect();
     console.log('Mongo connected');
-    await seedRoles(); // create default roles + superadmin if absent
+    // await seedRoles(); // create default roles + superadmin if absent
     app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
   } catch (err) {
     console.error('Failed to start:', err);

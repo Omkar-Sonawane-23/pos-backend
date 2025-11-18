@@ -14,7 +14,9 @@ exports.createOrder = async (req, res, next) => {
 
 exports.listOrders = async (req, res, next) => {
   try {
-    const orders = await orderService.listOrders();
+    // support query params for pagination and filtering
+    const { outlet, restaurant, limit = 25, page = 0 } = req.query;
+    const orders = await orderService.listOrders({ outlet, restaurant, limit: Number(limit), page: Number(page) });
     res.json({ data: orders });
   } catch (err) {
     next(err);
