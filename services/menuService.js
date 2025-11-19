@@ -41,6 +41,7 @@ exports.list = async ({ outletId, forPos = false, page = DEFAULT_PAGE, limit = D
   Object.assign(baseQuery, buildOutletQuery(outletId));
 
   // Projection: when forPos is true, return a slimmer payload for faster transfer
+  // include category so we can populate it below
   const posProjection = {
     name: 1,
     basePrice: 1,
@@ -52,9 +53,10 @@ exports.list = async ({ outletId, forPos = false, page = DEFAULT_PAGE, limit = D
     variants: 1,
     modifiers: 1,
     tags: 1,
-    meta: 1 // sometimes recipe or flags may be needed by POS
+    meta: 1,
+    categories: 1
   };
-  const defaultProjection = {}; // full doc when not POS (caller asked for more)
+  const defaultProjection = { categories: 1 }; // ensure category is available for populate when requesting full doc
 
   const projection = forPos ? posProjection : defaultProjection;
 
@@ -62,6 +64,7 @@ exports.list = async ({ outletId, forPos = false, page = DEFAULT_PAGE, limit = D
     .read('secondaryPreferred') // prefer secondaries for read scaling
     .lean()
     .select(projection)
+    .populate({ path: 'categories', select: 'name' }) // include category doc (name) with each item
     .sort({ name: 1 })
     .skip(p * l)
     .limit(l)
