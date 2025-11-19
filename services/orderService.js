@@ -63,7 +63,7 @@ function computeConsumptionsFromMenus(menuDocs, validatedItems) {
  */
 async function applyConsumptions(session, consumptionsMap, payload) {
   if (!consumptionsMap || consumptionsMap.size === 0) return;
-  const invIds = Array.from(consumptionsMap.keys()).map(id => mongoose.Types.ObjectId(id));
+  const invIds = Array.from(consumptionsMap.keys()).map(id => new mongoose.Types.ObjectId(id));
   const invDocs = await InventoryItem.find({ _id: { $in: invIds } }).session(session).exec();
   const invById = {};
   for (const inv of invDocs) invById[String(inv._id)] = inv;
@@ -593,6 +593,252 @@ exports.splitItemsToNewOrder = async ({ orderId, itemIndexes = [], itemIds = [],
     await session.commitTransaction();
     session.endSession();
     return await Order.findById(newOrderDoc._id).lean().exec();
+  } catch (err) {
+    await session.abortTransaction();
+    session.endSession();
+    throw err;
+  }
+};
+
+/**
+ * updateOrderItems({ orderId, items, userId })
+ *
+ * Replaces order.items with `items` array, recalculates totals,
+ * computes inventory consumption delta (new - old), applies it as bulk writes,
+ * and returns the updated order.
+ *
+ * items format: [{ menuItem: ObjectId|string (required) , variantId?, modifiers?, qty, note?, price? }]
+ */
+exports.updateOrderItems = async ({ orderId, items, userId }) => {
+  const session = await mongoose.startSession();
+  await session.startTransaction();
+  try {
+    // 1) Load order
+    const order = await Order.findById(orderId).session(session).exec();
+    if (!order) throw Object.assign(new Error('Order not found'), { status: 404 });
+    if (['completed', 'cancelled'].includes(String(order.status))) {
+      throw Object.assign(new Error('Cannot modify items of a completed or cancelled order'), { status: 409 });
+    }
+
+    // 2) Bulk load menu docs referenced in new items
+    const menuIds = Array.from(new Set((items || []).map(i => String(i.menuItem)).filter(Boolean)));
+    const menuDocs = {};
+    if (menuIds.length) {
+      const menus = await MenuItem.find({ _id: { $in: menuIds } }).session(session).lean().exec();
+      for (const m of menus) menuDocs[String(m._id)] = m;
+    }
+
+    // 3) Validate new items and prepare validatedItems array (same logic as create)
+    const validatedItems = [];
+    for (const it of items || []) {
+      if (!it.menuItem) {
+        // allow ad-hoc items if your backend supports it; else reject
+        // here: allow ad-hoc with no inventory consumption (no recipe)
+        validatedItems.push({
+          menuItem: null,
+          name: it.name || 'Ad-hoc Item',
+          variantId: it.variantId || null,
+          modifiers: it.modifiers || [],
+          qty: Math.max(1, Number(it.qty || 1)),
+          price: (it.price != null) ? Number(it.price) : 0,
+          note: it.note || ''
+        });
+        continue;
+      }
+
+      const menu = menuDocs[String(it.menuItem)];
+      if (!menu || !menu.isActive) throw Object.assign(new Error(`Menu item not available: ${it.menuItem}`), { status: 400 });
+
+      // determine unit price (variant or base)
+      let unitPrice = menu.basePrice;
+      if (it.variantId) {
+        const variant = (menu.variants || []).find(v => String(v._id) === String(it.variantId));
+        if (!variant) throw Object.assign(new Error('Variant not found'), { status: 400 });
+        unitPrice = variant.price;
+      }
+
+      // validate modifiers and compute their prices
+      const validatedModifiers = [];
+      if (Array.isArray(it.modifiers)) {
+        for (const m of it.modifiers) {
+          let mod = null;
+          if (m.modifierId) {
+            mod = (menu.modifiers || []).find(x => String(x._id) === String(m.modifierId));
+          } else if (m.name) {
+            mod = (menu.modifiers || []).find(x => x.name === m.name);
+          }
+          if (!mod) throw Object.assign(new Error(`Modifier not found for item ${menu.name}`), { status: 400 });
+          const modPrice = (m.price != null) ? m.price : mod.price;
+          validatedModifiers.push({
+            modifierId: mod._id,
+            name: mod.name,
+            price: modPrice
+          });
+        }
+      }
+
+      const qty = Math.max(1, Number(it.qty || 1));
+      validatedItems.push({
+        menuItem: menu._id,
+        name: menu.name,
+        variantId: it.variantId || null,
+        modifiers: validatedModifiers,
+        qty,
+        price: unitPrice,
+        note: it.note || ''
+      });
+    }
+
+    // 4) Compute old consumption map from existing order (menu meta.recipe)
+    const buildConsumptionMap = (menuDocsMap, itemsArr) => {
+      const map = new Map();
+      for (const it of itemsArr || []) {
+        if (!it || !it.menuItem) continue;
+        const menu = menuDocsMap[String(it.menuItem)];
+        const recipe = (menu && menu.meta && Array.isArray(menu.meta.recipe)) ? menu.meta.recipe : [];
+        const qtyMultiplier = it.qty || 1;
+        for (const r of recipe) {
+          if (!r.inventoryItemId) continue;
+          const key = String(r.inventoryItemId);
+          const add = (r.qty || 0) * qtyMultiplier;
+          map.set(key, (map.get(key) || 0) + add);
+        }
+      }
+      return map;
+    };
+
+    // ensure we have menu docs for old items too
+    const oldMenuIds = Array.from(new Set((order.items || []).map(i => String(i.menuItem)).filter(Boolean)));
+    for (const id of oldMenuIds) {
+      if (!menuDocs[id]) {
+        const m = await MenuItem.findById(id).session(session).lean().exec();
+        if (m) menuDocs[String(m._id)] = m;
+      }
+    }
+
+    const oldConsumptions = buildConsumptionMap(menuDocs, order.items || []);
+    const newConsumptions = buildConsumptionMap(menuDocs, validatedItems);
+
+    // 5) Compute delta: delta = new - old (positive => consume more; negative => return/restock)
+    const deltaMap = new Map();
+    const allKeys = new Set([...oldConsumptions.keys(), ...newConsumptions.keys()]);
+    for (const k of allKeys) {
+      const oldQty = oldConsumptions.get(k) || 0;
+      const newQty = newConsumptions.get(k) || 0;
+      const delta = newQty - oldQty;
+      if (delta !== 0) deltaMap.set(k, delta);
+    }
+
+    // 6) Apply inventory changes according to deltaMap
+    if (deltaMap.size > 0) {
+      const invIds = Array.from(deltaMap.keys()).map(id => new mongoose.Types.ObjectId(id));
+      const invDocs = await InventoryItem.find({ _id: { $in: invIds } }).session(session).exec();
+      const invById = {};
+      for (const inv of invDocs) invById[String(inv._id)] = inv;
+
+      const invBulk = [];
+      const stockBulk = [];
+      const failOnNegative = String(process.env.FAIL_ON_NEGATIVE_INVENTORY || '').toLowerCase() === 'true';
+
+      for (const [invId, delta] of deltaMap.entries()) {
+        const inv = invById[invId];
+        if (!inv) throw Object.assign(new Error(`Inventory item ${invId} not found`), { status: 400 });
+
+        if (delta > 0) {
+          // need to consume more: decrement inventory by delta
+          if (inv.isTracked && typeof inv.currentQty === 'number') {
+            const newQty = inv.currentQty - delta;
+            if (failOnNegative && newQty < 0) {
+              throw Object.assign(new Error(`Insufficient inventory for item ${inv.name}`), { status: 409 });
+            }
+            // Use $inc to decrement
+            invBulk.push({
+              updateOne: {
+                filter: { _id: inv._id },
+                update: { $inc: { currentQty: -delta } }
+              }
+            });
+          }
+          stockBulk.push({
+            insertOne: {
+              document: {
+                restaurant: order.restaurant,
+                outlet: order.outlet,
+                inventoryItem: inv._id,
+                change: -Math.abs(delta),
+                type: 'usage',
+                reference: `ORDER-ITEMS-UPDATE-${order.orderNumber || order._id}`,
+                performedBy: userId,
+                note: `Consumption due to order items update ${order.orderNumber || order._id}`,
+                createdAt: new Date()
+              }
+            }
+          });
+        } else if (delta < 0) {
+          // returned/restocked: increment inventory by -delta
+          const inc = Math.abs(delta);
+          if (inv.isTracked && typeof inv.currentQty === 'number') {
+            invBulk.push({
+              updateOne: {
+                filter: { _id: inv._id },
+                update: { $inc: { currentQty: inc } }
+              }
+            });
+          }
+          stockBulk.push({
+            insertOne: {
+              document: {
+                restaurant: order.restaurant,
+                outlet: order.outlet,
+                inventoryItem: inv._id,
+                change: Math.abs(inc), // positive change indicates added
+                type: 'adjustment',
+                reference: `ORDER-ITEMS-UPDATE-${order.orderNumber || order._id}`,
+                performedBy: userId,
+                note: `Returned by order items update ${order.orderNumber || order._id}`,
+                createdAt: new Date()
+              }
+            }
+          });
+        }
+      }
+
+      // execute bulk
+      if (invBulk.length) {
+        await InventoryItem.bulkWrite(invBulk, { session, ordered: false });
+      }
+      if (stockBulk.length) {
+        await StockMovement.bulkWrite(stockBulk, { session, ordered: false });
+      }
+    }
+
+    // 7) Replace order.items and recalculate totals
+    order.items = validatedItems;
+    // recalc totals: reuse earlier recalc logic if available; otherwise compute simply
+    let subtotal = 0;
+    for (const it of order.items || []) {
+      const modTotal = (it.modifiers || []).reduce((s, m) => s + (m.price || 0), 0);
+      const line = (it.price + modTotal) * (it.qty || 1);
+      subtotal += line - (it.discount || 0 || 0);
+    }
+    order.subtotal = subtotal;
+    order.taxTotal = order.taxTotal || 0;
+    order.discountTotal = order.discountTotal || 0;
+    order.serviceCharge = order.serviceCharge || 0;
+    order.total = subtotal + order.taxTotal + order.serviceCharge - order.discountTotal;
+
+    order.meta = order.meta || {};
+    order.meta.lastItemsUpdatedBy = userId;
+    order.meta.lastItemsUpdatedAt = new Date();
+
+    await order.save({ session });
+
+    await session.commitTransaction();
+    session.endSession();
+
+    // post-transaction: return fresh order
+    const fresh = await Order.findById(order._id).lean().exec();
+    return fresh;
   } catch (err) {
     await session.abortTransaction();
     session.endSession();

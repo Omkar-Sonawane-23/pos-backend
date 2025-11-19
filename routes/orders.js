@@ -16,5 +16,7 @@ router.post('/:id/payments', auth, roleCheck(['Cashier','Admin','SuperAdmin']), 
 router.post('/:id/refund', auth, roleCheck(['Admin','SuperAdmin']), orderController.refundPayment);
 router.post('/merge', auth, roleCheck(['Admin','SuperAdmin']), orderController.mergeOrders);
 router.post('/:id/split', auth, roleCheck(['Admin','SuperAdmin']), orderController.splitItems);
+router.put('/:id/items', auth, roleCheck(['Cashier', 'Admin', 'SuperAdmin']), orderController.updateItems);
+
 
 module.exports = router;

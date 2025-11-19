@@ -94,3 +94,17 @@ exports.splitItems = async (req, res, next) => {
     res.status(201).json({ data: newOrder });
   } catch (err) { next(err); }
 };
+
+exports.updateItems = async (req, res, next) => {
+  try {
+    const orderId = req.params.id;
+    const items = req.body.items; // expected: array of { menuItem, variantId?, modifiers?, qty, note?, price? }
+    if (!Array.isArray(items)) return res.status(400).json({ error: 'items must be an array' });
+
+    const userId = req.currentUser ? req.currentUser._id : (req.auth && req.auth.sub);
+    const updated = await orderService.updateOrderItems({ orderId, items, userId });
+    res.json({ data: updated });
+  } catch (err) {
+    next(err);
+  }
+};
