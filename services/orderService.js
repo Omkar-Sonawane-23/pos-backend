@@ -15,7 +15,12 @@ const { emitOrderToKds } = require('../kdsSocket');
 const FAIL_ON_NEGATIVE = String(process.env.FAIL_ON_NEGATIVE_INVENTORY || '').toLowerCase() === 'true';
 
 function generateOrderNumber() {
-  return `ORD-${Date.now()}-${Math.floor(100 + Math.random() * 900)}`;
+  const timestamp = Date.now();
+
+  // generate exactly 5 random digits (00000–99999)
+  const randomFive = Math.floor(10000 + Math.random() * 90000); // always 5 digits
+
+  return `ORD-${timestamp}-${randomFive}`;
 }
 
 async function recalculateTotals(order) {
@@ -850,6 +855,10 @@ exports.updateOrderItems = async ({ orderId, items, userId }) => {
 
     // post-transaction: return fresh order
     const fresh = await Order.findById(order._id).lean().exec();
+
+    // Notify KDS about status change
+    emitOrderToKds(fresh, 'order:statusUpdated');
+
     return fresh;
   } catch (err) {
     await session.abortTransaction();
