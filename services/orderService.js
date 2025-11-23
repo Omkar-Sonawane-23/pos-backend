@@ -10,6 +10,7 @@ const {
 } = require('../models');
 
 const redisCache = require('../lib/redisCache'); // optional noop
+const { emitOrderToKds } = require('../kdsSocket');
 
 const FAIL_ON_NEGATIVE = String(process.env.FAIL_ON_NEGATIVE_INVENTORY || '').toLowerCase() === 'true';
 
@@ -227,6 +228,8 @@ exports.createOrder = async ({ payload, userId }) => {
     await session.commitTransaction();
     session.endSession();
 
+    const freshOrder = await Order.findById(orderDoc._id).lean().exec();
+
     // optional cache invalidation
     try {
       if (redisCache && redisCache.del) {
@@ -235,7 +238,10 @@ exports.createOrder = async ({ payload, userId }) => {
       }
     } catch (e) { /* noop */ }
 
-    return await Order.findById(orderDoc._id).lean().exec();
+    // Notify all KDS screens for this outlet
+    emitOrderToKds(freshOrder, 'order:created');
+
+    return freshOrder;
   } catch (err) {
     await session.abortTransaction();
     session.endSession();
@@ -412,7 +418,13 @@ exports.updateOrderStatus = async (orderId, status, userId) => {
 
     await session.commitTransaction();
     session.endSession();
-    return await Order.findById(order._id).lean().exec();
+
+    const fresh = await Order.findById(order._id).lean().exec();
+
+    // Notify KDS about status change
+    emitOrderToKds(fresh, 'order:statusUpdated');
+
+    return fresh;
   } catch (err) {
     await session.abortTransaction();
     session.endSession();
